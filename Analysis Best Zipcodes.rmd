@@ -1,0 +1,564 @@
+---
+title: "Idenifying Best Zipcodes to Invest in for a Real Estate Company"
+author: "Priyanka Ramadas"
+date: "January 31, 2020"
+output:
+  html_document: 
+           toc: true
+
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options("scipen"=100, "digits"=4)
+library(ggplot2)
+library(data.table)
+library(stringr)
+library(dplyr)
+library(naniar)
+library(scales)
+library(ggrepel)
+```
+
+
+Real estate companies have a niche in purchasing properties to rent out short-term as part of their business model. I am particularly going to analyze two bedroom properties as they are the most preferred combinations in airbnb. I'm choosing the most busiest state and the tourist capital of United States, New York and identify the zipcodes which are the best to invest in. The rationale for looking into New York is because of its population density and most busiest city.                                                             
+
+Airbnb and zillow datasets are publically available.I have used the following data
+
+   1)Cost data: Zillow provides us an estimate of value for two-bedroom properties<br />
+   2)Revenue data: AirBnB is the medium through which the investor plans to lease out their investment property and we are able to see how much properties in certain neighborhoods rent out for in New York City
+
+I have also used a dataset for calculating the property tax from the website. 
+
+### 2.Solution
+
+ After performing the analysis, the recommendation is to purchase properties in New York in the following zipcodes:-
+ 
+If budget per property is less than 500k, investments in zipcodes 11434, 11234,10305 and 10306 will yield a higher returns. 
+
+If budget per property is greater than 500k invest in zipcodes 10025,10036,10022 and 11217.
+
+It is always better to purchase properties in different zipcodes to diversify future risks. 
+ 
+
+### 3.Approach
+
+In order to identify which zipcodes in New York are best to invest in, we are going to look at Return On Investment metric. 
+
+ROI = (Revenue from the property -  Expenses on the rental property) / Amount invested in the property 
+           
+Zipcodes with higher ROI are the best to invest in. The higher the return on investment, lesser is the break even period, which is defined as the total time (in years) required to earn the total amount invested.
+
+### 4.Analysis
+
+Enter the total no of bedrooms and the city for which the analysis is being done
+
+```{r cars}
+
+no_of_bedrooms <- 2
+city_name <- "New York"
+
+```
+
+#### Reading Datasets
+
+Reading the Airbnb data which contains information about rentals and Zillow data which contains median prices of 2 bedroom houses in America.
+
+```{r}
+airbnb_data <- fread("listings.csv", na.strings=c("","NA"))
+zillow_data <- fread("Zip_Zhvi_2bedroom.csv")
+```
+#### Data Filtering & Cleansing
+
+Let's define a function to filter the dataset which contains the cost of purchasing 2 bedroom properties for New York. This is done to ensure scalability, we can easily replicate the analysis for other cities in the future.
+
+```{r}
+costdata_filtering <- function(cost_data,city_name){
+  
+  cost_data <- cost_data[City == city_name] #Filtering zillow data for New York
+  
+return(cost_data)
+}
+
+```
+
+Lets define another function to filter the rental data from Airbnb for two bedroom properties in New York and including only the relevant columns needed in the analysis.
+
+```{r}
+rental_data_filtering <- function(rental_data,no_of_bedrooms){
+  
+  rental_data <- rental_data[bedrooms ==  no_of_bedrooms & market == city_name]
+  rental_data <- rental_data[,.(id,
+                              zipcode,
+                              cancellation_policy,
+                              price,
+                              weekly_price,
+                              monthly_price,
+                              extra_people,
+                              cleaning_fee,
+                              security_deposit)]
+  return(rental_data)
+}
+
+```
+
+Calling the functions to both the datasets and filtering Airbnb data for zipcodes present in Zillow data.
+
+```{r}
+airbnb_data_f <- rental_data_filtering(airbnb_data,no_of_bedrooms)
+
+zillow_data_f <- costdata_filtering(zillow_data,city_name)
+
+airbnb_data_f <- airbnb_data_f[zipcode %in% unique(zillow_data_f$RegionName)]
+
+```
+Let us look at the quality of the data present in the dataset, we use miss_var_summary function from naniar package to analyze missing values.
+ 
+```{r}
+
+missing_data <- miss_var_summary(airbnb_data_f)
+missing_data <- as.data.table(missing_data)
+missing_data[,"pct_miss" := pct_miss/100]
+
+
+ggplot(missing_data) + geom_bar(aes(reorder(variable,-pct_miss),pct_miss), fill = "darkcyan", stat = "identity") + 
+                       theme_classic() +
+                       xlab("Variable")+
+                       ylab("Percentage of Missing Data Points") +
+                       ggtitle("Missing Values in Airbnb Dataset") +
+                       geom_text(aes(reorder(variable,-pct_miss),
+                                     pct_miss, label = scales::percent(pct_miss)),vjust = -0.5, size = 3) +
+                       theme(plot.title = element_text(hjust=0.5)) +
+                       theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+                       scale_y_continuous(labels = scales::percent)
+
+```
+
+As we can see, from the above graph, more than 85% of the monthly price and weekly prices are missing. Therefore, we go ahead with price per night to calculate the revenue. 
+
+```{r}
+airbnb_data_f[,c("monthly_price",
+                 "weekly_price") :=  NULL]
+
+```
+
+If cleaning fee and security deposit is not available, we are going to substitute it as 0. 
+
+```{r}
+airbnb_data_f[,c("cleaning_fee",
+                 "security_deposit") := list(ifelse(is.na(cleaning_fee), 0, cleaning_fee),
+                                             ifelse(is.na(security_deposit), 0, security_deposit))]
+                                            
+```
+
+Price column has '$' symbol and is character datatype, in order to do numerical analysis, we need to convert to numeric.
+
+```{r}
+head(airbnb_data_f[,.(price,
+                      extra_people,
+                      cleaning_fee,
+                      security_deposit)])
+```
+Converting prices to numeric and removing the '$' sign.
+
+```{r}
+airbnb_data_f[,c("price",
+                 "security_deposit",
+                 "cleaning_fee",
+                 "extra_people") := list(as.numeric(str_replace_all(price,"[\\$,]","")),
+                                         as.numeric(str_replace_all(security_deposit,"[\\$,]","")),
+                                         as.numeric(str_replace_all(cleaning_fee,"[\\$,]","")),
+                                         as.numeric(str_replace_all(extra_people,"[\\$,]","")))]
+
+head(airbnb_data_f[,.(price,
+                      extra_people,
+                      cleaning_fee,
+                      security_deposit)])
+
+```
+Lets look at the box plot for the price charged per night to check if there are any outliers.
+
+```{r}
+airbnb_data_f[,"flag" := 1]
+
+ggplot(data =  airbnb_data_f) + geom_boxplot(aes(flag, price)) +
+                                theme_classic() + 
+                                xlab("") +
+                                ylab("Price charged per night") +
+                                ggtitle("Outlier Analysis of Price Per Night")+
+                                theme(plot.title = element_text(hjust=0.5))+
+                                scale_y_continuous(labels = unit_format(unit = "USD"))
+```
+
+As we can see above, there are no outliers in our data.
+
+#### Data Analysis
+
+
+Let us identify the zipcodes with highest number of Airbnb listings. We are going to look at the percentage of properties listed in a particular zipcode.
+
+```{r}
+listings_per_zipcode <- airbnb_data_f[,.(zipcode)]
+listings_per_zipcode[,"flag" := 1]
+listings_per_zipcode[,"total_listings_zipcode" := sum(flag), by = "zipcode"]
+listings_per_zipcode <- listings_per_zipcode[which(!duplicated(listings_per_zipcode[,.(zipcode,total_listings_zipcode)]))]
+
+listings_per_zipcode[,"total_listings" :=  sum(listings_per_zipcode$total_listings_zipcode)]
+listings_per_zipcode[,"percentage_listings" :=  round((total_listings_zipcode/total_listings)*100,digits = 2)]
+
+#Filtering top 10 based on percentage of rental properties in New York City Present in that zipcode
+top10_zipcodes_units <- listings_per_zipcode[order(-percentage_listings)]
+top10_zipcodes <- top10_zipcodes_units[1:10][order(-percentage_listings)]
+
+ggplot(top10_zipcodes,aes(reorder(zipcode,-percentage_listings),percentage_listings)) +
+                                        geom_bar(stat = "identity", fill = "darkcyan") + 
+                                        theme_classic() +
+                                        xlab("ZipCode") +
+                                        ylab("Percentage of houses listed (%)") +
+                                        ggtitle("Zipcodes with High Concentration of Airbnb Listings") +
+                                        theme(plot.title = element_text(hjust=0.5)) + 
+                                        geom_text(aes(label= paste0(percentage_listings,"%")),vjust = -0.25,size = 3)+
+                                        scale_y_continuous(labels = unit_format(unit = "%"), breaks = c(4,8,12))
+
+
+```
+
+Zipcodes 11215 and 10036 are most popular in terms of number of Airbnb listings.
+
+
+#### Assumptions
+
+1) An occupancy rate of 75% is assumed, calculating the total fees charged for a year excluding taxes 
+2) No damage, therefore security deposit is not charged
+3) No extra guests, so no extra people fee is charged
+4) Cleaning fee is charged for a stay. Since, we don't have any information about stay, we don't consider it<br />
+
+All the other assumptions used are listed as we go through the analyses.
+
+```{r}
+
+airbnb_data_f[,"yearly_revenue" := round(365 * 0.75) * (price)]
+
+```
+Visualising the top revenue generating codes.
+
+```{r}
+zip_code_revenue <- airbnb_data_f[,.(zipcode,yearly_revenue)]
+revenue_by_zipcode <- zip_code_revenue
+revenue_by_zipcode[,"average_revenue" := mean(yearly_revenue), by = "zipcode"]
+revenue_by_zipcode[,"yearly_revenue" :=  NULL]
+revenue_by_zipcode <- revenue_by_zipcode[which(!duplicated(revenue_by_zipcode))]
+revenue_by_zipcode <- revenue_by_zipcode[order(-average_revenue)]
+revenue_by_zipcode <- revenue_by_zipcode[1:10]
+
+revenue_by_zipcode[,"average_revenue" := round((average_revenue))]
+
+ggplot(revenue_by_zipcode) + 
+      geom_bar(aes(reorder(zipcode,-average_revenue),average_revenue), stat = "identity", fill = "darkcyan") + 
+      theme_classic() +
+      xlab("ZipCode") +
+      ylab("Average Revenue Per Year") + 
+      ggtitle("Zipcodes with Highest Average Revenue Generation")+
+      theme(plot.title = element_text(hjust=0.5)) + 
+      geom_text(aes(zipcode, average_revenue, label = dollar_format()(as.vector(average_revenue))), 
+                vjust = -0.25, size = 3)+
+      scale_y_continuous(labels = unit_format(unit = "USD"))
+                               
+```
+
+Even though zipcode 11215 and 10036 have highest concentration of Airbnb listings according to the previous figure, they do not generate as much cash flow as zipcode 10013. Zipcodes 10013 and 10011 have the highest cash flow per year.
+
+
+Airbnb Service Cost:
+
+Based on the cancellation policy selected by the host, the Airbnb service fees will be 3% for "flexible", "moderate" and "strict with 14 days grace period" cancellation policies. We are going to assume that the properties we will be renting out will have a flexible cancellation policy. Therefore,
+
+Airbnb service fee = 3% * fees charged to customers
+
+
+Source: https://www.airbnb.com/help/article/1857/what-is-the-airbnb-service-fee
+
+```{r}
+
+airbnb_data_f[,"yearly_airbnb_service_fee" := 0.03 * yearly_revenue]
+
+```
+Cost of utilities:
+
+According to secondary research, the basic utilities package for a house in New York is $145.55. Cost of Internet Network is $62.77. Therefore, total utility charges per month is $145.55 + $62.77 = $208.32.
+
+Source: https://smartasset.com/mortgage/what-is-the-cost-of-living-in-new-york-city
+
+```{r}
+
+airbnb_data_f[,"yearly_utility_charges" :=  208 * 12]
+
+```
+Property Taxes:
+
+Property tax is an important factor that contributes to expenses. Property tax information has been obtained at a county level from the source mentioned below. 
+
+Source: https://smartasset.com/taxes/new-york-property-tax-calculator
+
+```{r}
+property_tax <- fread("property_tax_Rates.csv")
+head(property_tax)
+```
+Merging the zillow data with property tax data.
+
+```{r}
+zillow_data_f <- merge(zillow_data_f,
+                       property_tax,
+                       by.x = "CountyName",
+                       by.y = "County",
+                       all.x = TRUE)
+```
+
+We have  cost data till June 2017. Whereas Airbnb data is scraped in the year 2019. We can forecast prices till 2019, but in the interest of time, we will assume the latest price we have to be the cost of purchasing a house in 2019.
+
+```{r}
+zillow_data_f <- zillow_data_f[,.(RegionName,
+                                  `2017-06`,
+                                  `Average Effective Property Tax Rate`)]
+
+setnames(zillow_data_f,
+         "2017-06",
+         "Cost_Of_Investment")
+
+```
+
+Calculating Property Tax according to the tax rate.
+
+Assumption: We do not have Propert Tax information for upcoming years. Therefore, assume that property tax is constant. 
+```{r}
+zillow_data_f[,"Property_tax" := Cost_Of_Investment *`Average Effective Property Tax Rate`]
+zillow_data_f[,`Average Effective Property Tax Rate` := NULL]
+
+```
+
+Assumption: Prices estimated in Zillow represent an unfurnished house. An Airbnb location needs to be well furnished and neatly maintained to attract high guest rating. For our properties, we will assume furnishing cost of $3,810.
+
+Source: https://furnishr.com/blog/cost-furnishing-apartment/ 
+
+```{r}
+
+zillow_data_f[,"Furnishing_cost" := 3810]
+
+```
+
+Home Insurance Cost: In order to protect the house from fire, hail, water and theft, It is necessary to enroll for a home insurance plan. 
+
+Assumption: Home Insurance Cost = 1% * Property Cost <br />
+            Maintenance and upkeep cost = 1% * Property Cost
+
+```{r}
+
+zillow_data_f[,"Insurance_cost" := 0.01 * Cost_Of_Investment]
+zillow_data_f[,"Maintenance_cost" := 0.01 * Cost_Of_Investment]
+
+```
+
+Closing cost: Closing costs are fees associated with the home purchase that are paid at the closing of real estate transactions. They typically include application fee, attorney fee, recording fee & flood determination fee.
+
+Assumption: Closing cost = 0.5% * Property Cost
+
+Source: https://www.zillow.com/mortgage-learning/closing-costs/
+
+```{r}
+zillow_data_f[,"closing_cost" := 0.005 * Cost_Of_Investment]
+
+```
+
+In order to perform the analysis at a zipcode level, we calculate an average of the following metrics at a zipcode level from the Airbnb data.<br />
+ 1) Yearly revenue<br />
+ 2) Airbnb service fee<br />
+ 3) Utility charges<br />
+
+```{r}
+zipcode_airbnb_data <- airbnb_data_f
+zipcode_airbnb_data[,c("Average_yearly_revenue",
+                       "Average_yearly_Airbnb_service_fee",
+                       "Average_utility_charges") := list(mean(yearly_revenue),
+                                                      mean(yearly_airbnb_service_fee),
+                                                      mean(yearly_utility_charges)), by = "zipcode"]
+
+zipcode_airbnb_data <- zipcode_airbnb_data[,.(zipcode,
+                                              Average_yearly_revenue,
+                                              Average_yearly_Airbnb_service_fee,
+                                              Average_utility_charges)]
+
+zipcode_airbnb_data <- zipcode_airbnb_data[which(!duplicated(zipcode_airbnb_data))]
+
+zillow_data_f[,"RegionName" := as.character(zillow_data_f$RegionName)]
+
+```
+
+Merging airbnb data at a zipcode level with zillow data. 
+
+```{r}
+analysis_final <- merge(zipcode_airbnb_data,
+                        zillow_data_f,
+                        by.x = "zipcode",
+                        by.y = "RegionName",
+                        all.x = TRUE)
+
+```
+
+Calculating Profit and Cost of Investment<br />
+1) Profit =  Revenue - Airbnb service fee - Utility charges - Property Tax - Insurance Cost - Maintenance Cost<br />
+2) Cost of Investment = Cost of house + furnishing cost + closing cost<br />
+
+Assumption: Property Value is assumed to be constant in the upcoming years.
+```{r}
+
+analysis_final[,"Profit" := Average_yearly_revenue - Average_yearly_Airbnb_service_fee - Average_utility_charges - Property_tax - Insurance_cost - Maintenance_cost]
+
+analysis_final[,"Total_Cost_Of_Investment" := Cost_Of_Investment + Furnishing_cost + closing_cost]
+
+```
+Calculating Return On Investment
+
+ROI =  Profit / Total Cost of Investment.
+
+Assumption: Property value yearly increase is not considered in the analysis since it will be realised only when the property is sold.
+```{r}
+analysis_final[,"ROI" := round((Profit/Total_Cost_Of_Investment) * 100, digits = 2)]
+```
+### 5.Results
+Plotting Zipcodes with high return on investment.
+```{r}
+analysis_final <- analysis_final[order(-ROI)]
+analysis_final <- analysis_final[!is.na(Cost_Of_Investment)]
+
+ggplot(analysis_final[order(-ROI)] %>% dplyr::top_n(10)) + 
+  geom_bar(aes(reorder(zipcode,-ROI),ROI), stat = "identity", fill = "darkcyan", label = "ROI") + 
+  geom_text(aes(reorder(zipcode,-ROI),ROI, label = paste0(ROI, "%")), vjust = -0.5, size =  3) +
+  theme_classic() +
+  xlab("Zipcodes") +
+  ylab("Return On Investment") +
+  ggtitle("Zipcodes with High Return On Investment") +
+  theme(plot.title = element_text(hjust=0.5))+
+  scale_y_continuous(labels = unit_format(unit = "%"))
+   
+```
+
+Zipcodes 11434 and 10306 have highest Return On Investment of 5.9% and 5.19%. Therefore, we make relatively more profit in these zipcodes when compared to the amount we have invested.
+
+
+Analysing the best zip code based on the price range. We are going to look at the Return On Investment for all ranges of Cost of Investment. 
+
+
+```{r}
+
+ggplot(analysis_final) + 
+  geom_point(aes(x = Total_Cost_Of_Investment,y = ROI), stat = "identity", fill = "darkcyan") + 
+  theme_classic() +
+  xlab("Cost of Investment (In USD)") +
+  ylab("Return On Investment (%)") +
+  ggtitle("Return On Investment by Cost of Investment") +
+  theme(plot.title = element_text(hjust=0.5)) + 
+  geom_text_repel(aes(x = Total_Cost_Of_Investment,y = ROI, label = zipcode),size = 3.5) +
+  scale_y_continuous(labels = unit_format(unit = "%")) +
+  scale_x_continuous(labels = unit_format(unit = "USD"))
+  
+```
+
+If the budget to purchase individual properties is less than 1 Million USD, Zipcodes 11434 and 10306 have the highest return on investment, greater than 5%. 
+
+However, If the company's budget is greater than 1 Million, purchasing properties in zipcodes 10025 and 10036 have the highest ROI. 
+
+
+Now let us analyze best zipcode based on cash flow generated. We are going to look at the break even period, which is calculated as Total Cost Of Investment / Profit Earned Per Year.
+
+```{r}
+analysis_final[,"years_to_breakeven" := Total_Cost_Of_Investment / Profit]
+
+ggplot(analysis_final) + 
+  geom_point(aes(x = Average_yearly_revenue,y = years_to_breakeven), stat = "identity", fill = "darkcyan") + 
+  theme_classic() +
+  xlab("Yearly Revenue") +
+  ylab("Total Years to Break Even") +
+  ggtitle("Analysing Break Even Time Period in Various Zipcodes") +
+  theme(plot.title = element_text(hjust=0.5)) + 
+  geom_text_repel(aes(x = Average_yearly_revenue,y = years_to_breakeven, label = zipcode),size = 3.5) +
+  scale_x_continuous(label = unit_format(unit = "USD")) +
+  scale_y_continuous(breaks = c(40,80,120,160,200,240,
+                                280,320,360,400,440,480,520))
+
+
+```
+
+Return On Investment is inversely proportional to total years to break even. Therefore, by purchasing houses in zipcodes 11434, 10306 and 10303, we can easily earn back the money we earned as profit. 
+
+We also see that zipcode 10013 is an outlier. Purchasing a property in that zipcode takes more than 500 years to break even. Same is that case with zipcode 10028 which has break even greater than 200 years. These zipcodes are clearly not viable for rental properties via airbnb.
+
+```{r}
+ggplot(analysis_final) + 
+  geom_point(aes(y = Profit, x = Total_Cost_Of_Investment), stat = "identity", fill = "darkcyan") + 
+  theme_classic() +
+  ylab("Yearly Profit") +
+  xlab("Total Cost Of Investment") +
+  ggtitle("Analysing Profit vs Cost Of Investment") +
+  theme(plot.title = element_text(hjust=0.5)) + 
+  geom_text_repel(aes(y = Profit, x= Total_Cost_Of_Investment, label = zipcode),size = 3.5) +
+  scale_x_continuous(label = unit_format(unit = "USD")) +
+  scale_y_continuous(label = unit_format(unit = "USD"))
+
+```
+
+We are going to analyse two zipcodes: 11434 which has highest yearly profit in less 1 Million USD cost of investment category and 10025 which has highest yearly profit in  > 1 Million USD cost of investment category. 
+
+
+```{r}
+data <- analysis_final[zipcode %in% c(11434,10025),.(zipcode,Profit,Total_Cost_Of_Investment)]
+data
+```
+
+If we purchase two properties in zipcode 11434,<br />
+  Total Investment = 776,044 USD<br />
+  Total Profit     =  45,592 USD
+
+If we purchase one property in zipcode 10025,<br />
+  Total Investment = 1,441,965 USD<br />
+  Total Profit     =    40,932 USD
+
+As we can see above, definitely a $45,592 profit on a $776,044 investment yields more returns when compared to $40,932 USD profit on a $1,441,965 investment. Therefore, purchasing houses in these zipcodes is more advisable.
+
+However, In case of purchases of multiple properties, it is always better to invest in different zipcodes to better diversify future risks. 
+
+
+### 6.Conclusion
+
+After analysing the Return On Interest, Break Even Period and Profits for different zipcodes. 
+
+Best Zipcodes To Invest if budget is less than 1 Million :
+   
+   1) 11434
+   2) 11234
+   3) 10305
+   4) 10306
+  
+Best Zipcodes to Invest if budget is greater than 1 Million:
+
+   1) 10025
+   2) 10036
+   3) 10022
+   4) 11217
+  
+Zipcodes to be avoided :
+
+   1) 10013
+   2) 10028
+
+
+
+
+
+
+
+
+
+
+
+
